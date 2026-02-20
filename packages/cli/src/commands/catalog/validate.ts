@@ -1,180 +1,115 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import matter from 'gray-matter';
 import { logger } from '../../utils/logger.js';
-import { CatalogSchema } from '../../core/schema.js';
-import { computeFileHash } from '../../utils/hash.js';
 import { validateSkillName, validateSkillDescription } from '../../utils/helpers.js';
 import chalk from 'chalk';
 
-/**
- * Parse YAML frontmatter from SKILL.md
- */
-function parseFrontmatter(content: string): { frontmatter: Record<string, any>; valid: boolean; errors: string[] } {
-  const errors: string[] = [];
-  const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  
-  if (!frontmatterMatch) {
-    errors.push('Missing YAML frontmatter (must start with --- and end with ---)');
-    return { frontmatter: {}, valid: false, errors };
-  }
-
-  const frontmatterText = frontmatterMatch[1];
-  const frontmatter: Record<string, any> = {};
-
-  // Simple YAML parser (key: value)
-  const lines = frontmatterText.split('\n');
-  for (const line of lines) {
-    if (!line.trim() || line.trim().startsWith('#')) continue;
-    
-    const colonIndex = line.indexOf(':');
-    if (colonIndex === -1) continue;
-    
-    const key = line.substring(0, colonIndex).trim();
-    const value = line.substring(colonIndex + 1).trim();
-    
-    frontmatter[key] = value;
-  }
-
-  // Validate required fields
-  if (!frontmatter.name) {
-    errors.push('Missing required field: name');
-  }
-
-  if (!frontmatter.description) {
-    errors.push('Missing required field: description');
-  }
-
-  return { 
-    frontmatter, 
-    valid: errors.length === 0, 
-    errors 
-  };
-}
-
 export async function catalogValidate() {
   const catalogPath = process.cwd();
-  const catalogJsonPath = path.join(catalogPath, 'meta', 'catalog.json');
+  const skillsDir = path.join(catalogPath, 'skills');
 
-  if (!fs.existsSync(catalogJsonPath)) {
-    logger.error('No catalog found at meta/catalog.json');
+  if (!fs.existsSync(skillsDir)) {
+    logger.error('No catalog found. Run "bre-ai-setup catalog init" first.');
     process.exit(1);
   }
 
   logger.info('Validating catalog...\n');
 
   let hasErrors = false;
+  let skillCount = 0;
+  const errors: string[] = [];
 
-  // Parse and validate schema
-  try {
-    const rawCatalog = JSON.parse(fs.readFileSync(catalogJsonPath, 'utf-8'));
-    const result = CatalogSchema.safeParse(rawCatalog);
+  // Read all skill directories
+  const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+  const skillDirs = entries.filter(e => e.isDirectory());
 
-    if (!result.success) {
-      logger.error('Schema validation failed:');
-      result.error.errors.forEach(err => {
-        console.error(chalk.red(`  - ${err.path.join('.')}: ${err.message}`));
-      });
-      hasErrors = true;
-    } else {
-      logger.success('Schema valid');
-      
-      const catalog = result.data;
-
-      // Validate skill files exist
-      if (catalog.skills && Object.keys(catalog.skills).length > 0) {
-        logger.debug(`Validating ${Object.keys(catalog.skills).length} skills...`);
-        
-        for (const [skillName, skill] of Object.entries(catalog.skills)) {
-          const skillPath = path.join(catalogPath, skill.path);
-          
-          if (!fs.existsSync(skillPath)) {
-            logger.error(`Skill file not found: ${skill.path}`);
-            hasErrors = true;
-            continue;
-          }
-
-          // Validate skill name format
-          const nameValidation = validateSkillName(skillName);
-          if (!nameValidation.valid) {
-            logger.error(`Invalid skill name "${skillName}": ${nameValidation.error}`);
-            hasErrors = true;
-          }
-
-          // Validate skill directory matches name
-          const expectedDir = path.join(catalogPath, 'skills', skillName);
-          const actualDir = path.dirname(skillPath);
-          if (expectedDir !== actualDir) {
-            logger.error(`Skill directory mismatch for "${skillName}": expected skills/${skillName}/`);
-            hasErrors = true;
-          }
-
-          // Validate frontmatter
-          const content = fs.readFileSync(skillPath, 'utf-8');
-          const { frontmatter, valid, errors } = parseFrontmatter(content);
-
-          if (!valid) {
-            logger.error(`Frontmatter validation failed for "${skillName}":`);
-            errors.forEach(err => {
-              console.error(chalk.red(`  - ${err}`));
-            });
-            hasErrors = true;
-          } else {
-            // Validate frontmatter name matches directory
-            if (frontmatter.name !== skillName) {
-              logger.error(`Frontmatter name mismatch for "${skillName}": frontmatter has "${frontmatter.name}"`);
-              hasErrors = true;
-            }
-
-            // Validate description length
-            const descValidation = validateSkillDescription(frontmatter.description);
-            if (!descValidation.valid) {
-              logger.error(`Invalid description for "${skillName}": ${descValidation.error}`);
-              hasErrors = true;
-            }
-
-            logger.debug(`✓ ${skillName} - frontmatter valid`);
-          }
-
-          // Validate hash
-          const actualHash = computeFileHash(skillPath);
-          if (actualHash !== skill.hash) {
-            logger.warn(`Hash mismatch for ${skillName}:`);
-            console.log(`  Expected: ${skill.hash}`);
-            console.log(`  Actual:   ${actualHash}`);
-            hasErrors = true;
-          } else {
-            logger.debug(`✓ ${skillName} - hash valid`);
-          }
-        }
-
-        if (!hasErrors) {
-          logger.success('All skill paths exist');
-          logger.success('All frontmatter valid');
-          logger.success('All hashes valid');
-        }
-      } else {
-        logger.warn('No skills defined in catalog');
-      }
-
-      // Check for duplicates (simple check)
-      const skillPaths = Object.values(catalog.skills || {}).map(s => s.path);
-      const uniquePaths = new Set(skillPaths);
-      if (skillPaths.length !== uniquePaths.size) {
-        logger.error('Duplicate skill paths found');
-        hasErrors = true;
-      } else {
-        logger.success('No duplicates');
-      }
-    }
-  } catch (error) {
-    logger.error('Failed to parse catalog.json', error as Error);
-    hasErrors = true;
+  if (skillDirs.length === 0) {
+    logger.warn('No skills found in skills/ directory');
+    console.log('');
+    return;
   }
 
+  logger.info(`Found ${skillDirs.length} skill folder${skillDirs.length === 1 ? '' : 's'}\n`);
+
+  for (const dir of skillDirs) {
+    skillCount++;
+    const skillName = dir.name;
+    const skillPath = path.join(skillsDir, skillName, 'SKILL.md');
+
+    console.log(chalk.cyan(`Checking ${skillName}...`));
+
+    // Check if SKILL.md exists
+    if (!fs.existsSync(skillPath)) {
+      console.log(chalk.red(`  ✖ Missing SKILL.md`));
+      errors.push(`${skillName}: Missing SKILL.md file`);
+      hasErrors = true;
+      continue;
+    }
+
+    // Validate skill name
+    const nameValidation = validateSkillName(skillName);
+    if (!nameValidation.valid) {
+      console.log(chalk.red(`  ✖ Invalid skill name: ${nameValidation.error}`));
+      errors.push(`${skillName}: Invalid name - ${nameValidation.error}`);
+      hasErrors = true;
+    }
+
+    // Parse frontmatter
+    try {
+      const content = fs.readFileSync(skillPath, 'utf-8');
+      const { data, content: body } = matter(content);
+
+      // Validate required frontmatter fields
+      if (!data.name) {
+        console.log(chalk.red(`  ✖ Missing required field: name`));
+        errors.push(`${skillName}: Missing 'name' field in frontmatter`);
+        hasErrors = true;
+      } else if (data.name !== skillName) {
+        console.log(chalk.yellow(`  ⚠ Warning: frontmatter name "${data.name}" doesn't match folder name "${skillName}"`));
+      }
+
+      if (!data.description) {
+        console.log(chalk.red(`  ✖ Missing required field: description`));
+        errors.push(`${skillName}: Missing 'description' field in frontmatter`);
+        hasErrors = true;
+      } else {
+        const descValidation = validateSkillDescription(data.description);
+        if (!descValidation.valid) {
+          console.log(chalk.red(`  ✖ Invalid description: ${descValidation.error}`));
+          errors.push(`${skillName}: ${descValidation.error}`);
+          hasErrors = true;
+        }
+      }
+
+      // Validate content exists
+      if (!body || body.trim().length === 0) {
+        console.log(chalk.red(`  ✖ SKILL.md has no content after frontmatter`));
+        errors.push(`${skillName}: No content in SKILL.md`);
+        hasErrors = true;
+      }
+
+      if (!hasErrors) {
+        console.log(chalk.green(`  ✓ Valid`));
+      }
+
+    } catch (error) {
+      console.log(chalk.red(`  ✖ Failed to parse: ${(error as Error).message}`));
+      errors.push(`${skillName}: Parse error - ${(error as Error).message}`);
+      hasErrors = true;
+    }
+
+    console.log('');
+  }
+
+  // Summary
   if (hasErrors) {
-    console.log('\n' + chalk.red('✖ Validation failed'));
+    logger.error(`Validation failed with ${errors.length} error${errors.length === 1 ? '' : 's'}:`);
+    errors.forEach(err => {
+      console.error(chalk.red(`  - ${err}`));
+    });
     process.exit(1);
   } else {
-    console.log('\n' + chalk.green('✨ Validation passed!'));
+    logger.success(`✨ All ${skillCount} skill${skillCount === 1 ? '' : 's'} validated successfully!`);
   }
 }

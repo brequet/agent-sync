@@ -1,31 +1,11 @@
 import type { UserConfig, CatalogEntry, InstalledSkill } from './config.js';
-import type { Catalog, Skill } from './schema.js';
-import { loadCatalog, buildFullSkillName, resolveCatalogPath } from './installer.js';
+import { discoverSkills, type DiscoveredSkill } from './discovery.js';
+import { resolveCatalogPath } from './installer.js';
 import { logger } from '../utils/logger.js';
 import { getOpenCodeSkillsPath } from '../utils/paths.js';
 import { computeFileHash } from '../utils/hash.js';
 import fs from 'node:fs';
 import path from 'node:path';
-
-/**
- * Compute hash of an actually installed skill file
- * Returns null if file doesn't exist
- */
-function computeActualFileHash(fullSkillName: string): string | null {
-  const skillsDir = getOpenCodeSkillsPath();
-  const skillPath = path.join(skillsDir, fullSkillName, 'SKILL.md');
-  
-  if (!fs.existsSync(skillPath)) {
-    return null;
-  }
-  
-  try {
-    return computeFileHash(skillPath);
-  } catch (error) {
-    logger.debug(`Failed to compute hash for ${fullSkillName}: ${(error as Error).message}`);
-    return null;
-  }
-}
 
 /**
  * A skill available in a catalog
@@ -34,59 +14,84 @@ export interface AvailableSkill {
   catalogId: string;
   catalogEntry: CatalogEntry;
   skillName: string;
-  skill: Skill;
-  fullName: string;
+  skill: DiscoveredSkill;
+}
+
+/**
+ * A skill that was removed from catalog
+ */
+export interface RemovedSkill {
+  skillName: string;
+  installedSkill: InstalledSkill;
 }
 
 /**
  * Comparison result between catalog and installed skills
  */
-export interface CatalogDiff {
-  new: AvailableSkill[];        // In catalog, not installed
-  updated: AvailableSkill[];    // Installed but hash differs
-  unchanged: AvailableSkill[];  // Installed and hash matches
-  removed: InstalledSkill[];    // Installed but not in any catalog
+export interface DiffResult {
+  new: AvailableSkill[];      // Skills in catalog but not installed
+  updated: AvailableSkill[];  // Skills installed but content changed
+  removed: RemovedSkill[];    // Skills installed but no longer in catalog
+  unchanged: AvailableSkill[]; // Skills installed and unchanged
 }
 
 /**
- * Compare installed skills with catalog state
- * Returns what's new, updated, unchanged, and removed
+ * Compute hash of an actually installed skill file
+ * Returns null if file doesn't exist
+ */
+function computeActualFileHash(skillName: string): string | null {
+  const skillsDir = getOpenCodeSkillsPath();
+  const skillPath = path.join(skillsDir, skillName, 'SKILL.md');
+  
+  if (!fs.existsSync(skillPath)) {
+    return null;
+  }
+  
+  try {
+    return computeFileHash(skillPath);
+  } catch (error) {
+    logger.debug(`Failed to compute hash for ${skillName}: ${(error as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * Compare catalog skills with installed skills
  */
 export function compareWithCatalog(
   config: UserConfig,
   catalogs: Array<{ id: string; entry: CatalogEntry }>
-): CatalogDiff {
-  const result: CatalogDiff = {
+): DiffResult {
+  const result: DiffResult = {
     new: [],
     updated: [],
-    unchanged: [],
     removed: [],
+    unchanged: [],
   };
 
   // Track which installed skills we've seen in catalogs
   const seenInstalledSkills = new Set<string>();
 
-  // Build map of available skills from all catalogs
+  // Check each catalog
   for (const { id: catalogId, entry } of catalogs) {
     try {
-      const catalog = loadCatalog(catalogId, entry);
+      const catalogPath = resolveCatalogPath(catalogId, entry);
+      const skills = discoverSkills(catalogPath);
 
-      if (!catalog.skills || Object.keys(catalog.skills).length === 0) {
+      if (skills.size === 0) {
         logger.debug(`No skills in catalog: ${catalogId}`);
         continue;
       }
 
       // Check each skill in this catalog
-      for (const [skillName, skill] of Object.entries(catalog.skills)) {
-        const fullName = buildFullSkillName(catalogId, skillName);
-        const installedSkill = config.installed[fullName];
+      for (const [skillName, skill] of skills) {
+        const installedSkill = config.installed[skillName];
 
         const availableSkill: AvailableSkill = {
           catalogId,
           catalogEntry: entry,
           skillName,
           skill,
-          fullName,
         };
 
         if (!installedSkill) {
@@ -94,30 +99,34 @@ export function compareWithCatalog(
           result.new.push(availableSkill);
         } else {
           // Skill is installed, mark as seen
-          seenInstalledSkills.add(fullName);
+          seenInstalledSkills.add(skillName);
+
+          // Check if this skill belongs to this catalog
+          if (installedSkill.catalog !== catalogId) {
+            // Skill installed from different catalog, skip
+            logger.debug(`Skill ${skillName} installed from ${installedSkill.catalog}, not ${catalogId}`);
+            continue;
+          }
 
           // Check if hash differs by comparing actual files
-          const actualFileHash = computeActualFileHash(fullName);
+          const actualFileHash = computeActualFileHash(skillName);
           const fileMissing = actualFileHash === null;
           
           if (fileMissing) {
             result.updated.push(availableSkill);
           } else {
             // Compute hash of the source file in the catalog
-            const catalogPath = resolveCatalogPath(catalogId, entry);
-            const sourcePath = path.join(catalogPath, skill.path);
-            
             let catalogSourceHash: string | null = null;
             try {
-              if (fs.existsSync(sourcePath)) {
-                catalogSourceHash = computeFileHash(sourcePath);
+              if (fs.existsSync(skill.sourcePath)) {
+                catalogSourceHash = computeFileHash(skill.sourcePath);
               }
             } catch (error) {
-              logger.debug(`Failed to compute catalog source hash for ${fullName}: ${(error as Error).message}`);
+              logger.debug(`Failed to compute catalog source hash for ${skillName}: ${(error as Error).message}`);
             }
             
             // Compare actual installed file hash with catalog source file hash
-            // If they differ, the catalog has been updated or user modified the file
+            // If they differ, the catalog has been updated
             const needsUpdate = catalogSourceHash !== null && actualFileHash !== catalogSourceHash;
             
             if (needsUpdate) {
@@ -134,9 +143,12 @@ export function compareWithCatalog(
   }
 
   // Find removed skills (installed but not in any catalog)
-  for (const [fullName, installedSkill] of Object.entries(config.installed)) {
-    if (!seenInstalledSkills.has(fullName)) {
-      result.removed.push(installedSkill);
+  for (const [skillName, installedSkill] of Object.entries(config.installed)) {
+    if (!seenInstalledSkills.has(skillName)) {
+      result.removed.push({
+        skillName,
+        installedSkill,
+      });
     }
   }
 
@@ -144,25 +156,23 @@ export function compareWithCatalog(
 }
 
 /**
- * Get a summary of the diff for display
+ * Summary of diff results
  */
-export function getDiffSummary(diff: CatalogDiff): {
+export interface DiffSummary {
   hasChanges: boolean;
   newCount: number;
   updatedCount: number;
   removedCount: number;
-  totalChanges: number;
-} {
-  const newCount = diff.new.length;
-  const updatedCount = diff.updated.length;
-  const removedCount = diff.removed.length;
-  const totalChanges = newCount + updatedCount + removedCount;
+}
 
+/**
+ * Get a summary of the diff for display
+ */
+export function getDiffSummary(diff: DiffResult): DiffSummary {
   return {
-    hasChanges: totalChanges > 0,
-    newCount,
-    updatedCount,
-    removedCount,
-    totalChanges,
+    hasChanges: diff.new.length > 0 || diff.updated.length > 0 || diff.removed.length > 0,
+    newCount: diff.new.length,
+    updatedCount: diff.updated.length,
+    removedCount: diff.removed.length,
   };
 }

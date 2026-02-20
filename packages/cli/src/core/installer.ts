@@ -2,9 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { logger } from '../utils/logger.js';
 import { getOpenCodeSkillsPath, ensureDir, getCatalogCachePath } from '../utils/paths.js';
-import { computeFileHash } from '../utils/hash.js';
-import type { Catalog, Skill } from './schema.js';
-import type { UserConfig, CatalogEntry, InstalledSkill } from './config.js';
+import type { UserConfig, CatalogEntry } from './config.js';
+import type { DiscoveredSkill } from './discovery.js';
 
 /**
  * Result of a skill installation attempt
@@ -12,19 +11,7 @@ import type { UserConfig, CatalogEntry, InstalledSkill } from './config.js';
 export interface InstallResult {
   action: 'created' | 'updated' | 'skipped';
   skillName: string;
-  fullName: string;
   error?: string;
-}
-
-/**
- * A skill with its catalog context
- */
-export interface SkillWithContext {
-  catalogId: string;
-  catalogEntry: CatalogEntry;
-  catalog: Catalog;
-  skillName: string;
-  skill: Skill;
 }
 
 /**
@@ -52,76 +39,43 @@ export function resolveCatalogPath(catalogId: string, entry: CatalogEntry): stri
 }
 
 /**
- * Load a catalog from a catalog entry
+ * Check if a skill already exists (for collision detection)
+ * Returns: null if not exists, 'catalog' if from catalog, 'custom' if custom skill
  */
-export function loadCatalog(catalogId: string, entry: CatalogEntry): Catalog {
-  const catalogPath = resolveCatalogPath(catalogId, entry);
-  const catalogJsonPath = path.join(catalogPath, 'meta', 'catalog.json');
+export function checkSkillExists(
+  skillName: string,
+  config: UserConfig
+): { type: 'catalog'; catalogId: string } | { type: 'custom' } | null {
+  const skillPath = path.join(getOpenCodeSkillsPath(), skillName, 'SKILL.md');
   
-  if (!fs.existsSync(catalogJsonPath)) {
-    throw new Error(`Catalog not found: ${catalogJsonPath}`);
+  if (!fs.existsSync(skillPath)) {
+    return null;
   }
-
-  const content = fs.readFileSync(catalogJsonPath, 'utf-8');
-  return JSON.parse(content);
-}
-
-/**
- * Build the full skill name for installation
- * Format: <catalog-id>-<skill-name>
- */
-export function buildFullSkillName(catalogId: string, skillName: string): string {
-  return `${catalogId}-${skillName}`;
-}
-
-/**
- * Determine what action to take for a skill
- */
-export function determineAction(
-  fullSkillName: string,
-  catalogSkill: Skill,
-  installed: Record<string, InstalledSkill>,
-  targetDir: string
-): 'create' | 'update' | 'skip' {
-  const installedSkill = installed[fullSkillName];
   
-  // Not installed yet
-  if (!installedSkill) {
-    return 'create';
+  // Check if it's tracked in config
+  const installedSkill = config.installed[skillName];
+  if (installedSkill) {
+    return { type: 'catalog', catalogId: installedSkill.catalog };
   }
-
-  // Check if directory exists
-  const skillDir = path.join(targetDir, fullSkillName);
-  if (!fs.existsSync(skillDir)) {
-    logger.debug(`Skill ${fullSkillName} tracked but directory missing, recreating`);
-    return 'create';
-  }
-
-  // Compare hashes
-  if (installedSkill.hash !== catalogSkill.hash) {
-    logger.debug(`Hash mismatch for ${fullSkillName}: ${installedSkill.hash} -> ${catalogSkill.hash}`);
-    return 'update';
-  }
-
-  return 'skip';
+  
+  // File exists but not tracked → custom skill
+  return { type: 'custom' };
 }
 
 /**
  * Install or update a single skill
+ * Returns true if installed, false if skipped
  */
 export function installSkill(
-  skillWithContext: SkillWithContext,
+  catalogId: string,
+  catalogPath: string,
+  skillName: string,
+  skill: DiscoveredSkill,
   targetDir: string,
-  action: 'create' | 'update'
-): void {
-  const { catalogId, catalogEntry, skillName, skill } = skillWithContext;
-  const fullName = buildFullSkillName(catalogId, skillName);
-  
-  // Resolve catalog path (handles both local and git catalogs)
-  const catalogPath = resolveCatalogPath(catalogId, catalogEntry);
-  
+  force: boolean = false
+): boolean {
   // Source path (in catalog)
-  const sourcePath = path.join(catalogPath, skill.path);
+  const sourcePath = skill.sourcePath;
   
   // Validate source exists
   if (!fs.existsSync(sourcePath)) {
@@ -129,7 +83,7 @@ export function installSkill(
   }
 
   // Target directory
-  const skillDir = path.join(targetDir, fullName);
+  const skillDir = path.join(targetDir, skillName);
   ensureDir(skillDir);
 
   // Target file path
@@ -139,108 +93,5 @@ export function installSkill(
   fs.copyFileSync(sourcePath, targetPath);
   
   logger.debug(`Copied ${sourcePath} -> ${targetPath}`);
-}
-
-/**
- * Install skills from catalogs
- */
-export async function installSkills(
-  config: UserConfig,
-  catalogs: Array<{ id: string; entry: CatalogEntry }>,
-  skillFilter?: (catalogId: string, skillName: string) => boolean,
-  dryRun: boolean = false
-): Promise<InstallResult[]> {
-  const results: InstallResult[] = [];
-  const targetDir = getOpenCodeSkillsPath();
-
-  // Ensure target directory exists (unless dry run)
-  if (!dryRun) {
-    ensureDir(targetDir);
-  }
-
-  logger.debug(`Target directory: ${targetDir}`);
-
-  // Gather all skills from all catalogs
-  const skillsToInstall: SkillWithContext[] = [];
-
-  for (const { id: catalogId, entry } of catalogs) {
-    try {
-      const catalog = loadCatalog(catalogId, entry);
-      
-      if (!catalog.skills || Object.keys(catalog.skills).length === 0) {
-        logger.debug(`No skills in catalog: ${catalogId}`);
-        continue;
-      }
-
-      for (const [skillName, skill] of Object.entries(catalog.skills)) {
-        // Apply filter if provided
-        if (skillFilter && !skillFilter(catalogId, skillName)) {
-          continue;
-        }
-
-        skillsToInstall.push({
-          catalogId,
-          catalogEntry: entry,
-          catalog,
-          skillName,
-          skill,
-        });
-      }
-    } catch (error) {
-      logger.warn(`Failed to load catalog ${catalogId}: ${(error as Error).message}`);
-    }
-  }
-
-  logger.debug(`Found ${skillsToInstall.length} skills to process`);
-
-  // Process each skill
-  for (const skillWithContext of skillsToInstall) {
-    const { catalogId, skillName, skill } = skillWithContext;
-    const fullName = buildFullSkillName(catalogId, skillName);
-
-    try {
-      const action = determineAction(fullName, skill, config.installed, targetDir);
-
-      if (action === 'skip') {
-        results.push({ action: 'skipped', skillName, fullName });
-        continue;
-      }
-
-      if (!dryRun) {
-        installSkill(skillWithContext, targetDir, action);
-      }
-
-      results.push({
-        action: action === 'create' ? 'created' : 'updated',
-        skillName,
-        fullName,
-      });
-    } catch (error) {
-      results.push({
-        action: 'skipped',
-        skillName,
-        fullName,
-        error: (error as Error).message,
-      });
-    }
-  }
-
-  return results;
-}
-
-/**
- * Create installed skill tracking record
- */
-export function createInstalledRecord(
-  catalogId: string,
-  skillName: string,
-  skill: Skill
-): InstalledSkill {
-  return {
-    catalog: catalogId,
-    skillName,
-    version: skill.version,
-    hash: skill.hash,
-    installedAt: new Date().toISOString(),
-  };
+  return true;
 }

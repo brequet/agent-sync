@@ -86,10 +86,13 @@ export function getCatalogCacheDir(): string {
 
 /**
  * Get the cache path for a specific catalog
- * Uses: ~/.config/ai-setup/.cache/<catalogId>/
+ * Sanitizes catalog ID for filesystem compatibility
+ * Uses: ~/.config/ai-setup/.cache/<sanitizedCatalogId>/
  */
 export function getCatalogCachePath(catalogId: string): string {
-  return path.join(getCatalogCacheDir(), catalogId);
+  // Sanitize catalog ID: brequet/bre-ia-catalog → brequet-bre-ia-catalog
+  const sanitized = catalogId.replace(/\//g, '-').replace(/\\/g, '-');
+  return path.join(getCatalogCacheDir(), sanitized);
 }
 
 /**

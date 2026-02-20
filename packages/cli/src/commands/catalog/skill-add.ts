@@ -3,13 +3,10 @@ import path from 'node:path';
 import { input } from '@inquirer/prompts';
 import { logger } from '../../utils/logger.js';
 import { toSkillName, validateSkillName, validateSkillDescription } from '../../utils/helpers.js';
-import { computeFileHash } from '../../utils/hash.js';
-import type { Catalog, Skill } from '../../core/schema.js';
 
 interface SkillAddOptions {
   description?: string;
   tags?: string;
-  version?: string;
   license?: string;
 }
 
@@ -48,11 +45,11 @@ metadata:
 
 export async function catalogSkillAdd(name?: string, options: SkillAddOptions = {}) {
   const catalogPath = process.cwd();
-  const catalogJsonPath = path.join(catalogPath, 'meta', 'catalog.json');
+  const skillsDir = path.join(catalogPath, 'skills');
 
-  // Check if catalog exists
-  if (!fs.existsSync(catalogJsonPath)) {
-    logger.error('No catalog found. Run "catalog new" first.');
+  // Check if catalog exists (skills/ directory)
+  if (!fs.existsSync(skillsDir)) {
+    logger.error('No catalog found. Run "bre-ai-setup catalog init" first.');
     process.exit(1);
   }
 
@@ -105,10 +102,9 @@ export async function catalogSkillAdd(name?: string, options: SkillAddOptions = 
     .filter(Boolean);
 
   const license = options.license || 'MIT';
-  const version = options.version || '1.0.0';
 
   // Create skill directory and SKILL.md
-  const skillDir = path.join(catalogPath, 'skills', skillName);
+  const skillDir = path.join(skillsDir, skillName);
   if (fs.existsSync(skillDir)) {
     logger.error(`Skill "${skillName}" already exists`);
     process.exit(1);
@@ -121,32 +117,9 @@ export async function catalogSkillAdd(name?: string, options: SkillAddOptions = 
   fs.writeFileSync(skillFilePath, skillContent);
   logger.success(`Created skills/${skillName}/SKILL.md`);
 
-  // Compute hash
-  const hash = computeFileHash(skillFilePath);
-  logger.debug(`Computed hash: ${hash}`);
-
-  // Update catalog.json
-  const catalog: Catalog = JSON.parse(fs.readFileSync(catalogJsonPath, 'utf-8'));
-  
-  if (!catalog.skills) {
-    catalog.skills = {};
-  }
-
-  const skill: Skill = {
-    hash,
-    path: `skills/${skillName}/SKILL.md`,
-    tags,
-    description,
-    version,
-  };
-
-  catalog.skills[skillName] = skill;
-  fs.writeFileSync(catalogJsonPath, JSON.stringify(catalog, null, 2));
-  logger.success('Updated meta/catalog.json');
-
   console.log('\n' + '✨ Skill added successfully!\n');
   logger.info(`Name:  ${skillName}`);
   logger.info(`Path:  skills/${skillName}/SKILL.md`);
-  logger.info(`Hash:  ${hash.substring(0, 20)}...`);
   logger.info(`\nNext: Edit skills/${skillName}/SKILL.md to add skill instructions`);
+  console.log('');
 }

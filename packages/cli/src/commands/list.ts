@@ -1,9 +1,12 @@
 import chalk from "chalk";
 import { logger } from "../utils/logger.js";
 import { loadConfig, getActiveCatalogs } from "../core/config.js";
-import { loadCatalog } from "../core/installer.js";
-import { getUserConfigPath } from "../utils/paths.js";
+import { getUserConfigPath, getOpenCodeSkillsPath } from "../utils/paths.js";
 import { compareWithCatalog, getDiffSummary } from "../core/diff.js";
+import { discoverSkills } from "../core/discovery.js";
+import { resolveCatalogPath } from "../core/installer.js";
+import fs from "node:fs";
+import path from "node:path";
 
 export async function list() {
   const config = loadConfig();
@@ -31,8 +34,9 @@ export async function list() {
 
   for (const [id, entry] of catalogEntries) {
     try {
-      const catalog = loadCatalog(id, entry);
-      const skillCount = Object.keys(catalog.skills || {}).length;
+      const catalogPath = resolveCatalogPath(id, entry);
+      const skills = discoverSkills(catalogPath);
+      const skillCount = skills.size;
       const statusIcon = entry.active ? chalk.green("●") : chalk.gray("○");
 
       // Calculate updates for this catalog
@@ -56,8 +60,6 @@ export async function list() {
       console.log(
         `${statusIcon} ${chalk.bold(id)} ${chalk.dim(`(priority: ${entry.priority})`)}${updateInfo}`,
       );
-      console.log(`  ${chalk.dim("Name:")}     ${catalog.name}`);
-      console.log(`  ${chalk.dim("Version:")}  ${catalog.version}`);
       console.log(`  ${chalk.dim("Type:")}     ${entry.type}`);
 
       if (entry.type === "git") {
@@ -81,7 +83,11 @@ export async function list() {
         `${chalk.red("✖")} ${chalk.bold(id)} ${chalk.dim(`(priority: ${entry.priority})`)}`,
       );
       console.log(`  ${chalk.red("Error:")} ${(error as Error).message}`);
-      console.log(`  ${chalk.dim("Path:")}  ${entry.path}`);
+      if (entry.type === "local") {
+        console.log(`  ${chalk.dim("Path:")}  ${entry.path}`);
+      } else {
+        console.log(`  ${chalk.dim("URL:")}   ${entry.url}`);
+      }
     }
   }
 
@@ -115,18 +121,16 @@ export async function list() {
     }
 
     // Build maps for quick lookup
-    const updatedSkills = new Set(diff.updated.map((s) => s.fullName));
-    const removedSkills = new Set(
-      diff.removed.map((s) => `${s.catalog}-${s.skillName}`),
-    );
+    const updatedSkills = new Set(diff.updated.map((s) => s.skillName));
+    const removedSkillNames = new Set(diff.removed.map((r) => r.skillName));
 
     // Display by catalog
     for (const [catalogId, skills] of byCatalog) {
-      const catalogUpdateCount = skills.filter(([fullName]) =>
-        updatedSkills.has(fullName),
+      const catalogUpdateCount = skills.filter(([skillName]) =>
+        updatedSkills.has(skillName),
       ).length;
-      const catalogRemovedCount = skills.filter(([fullName]) =>
-        removedSkills.has(fullName),
+      const catalogRemovedCount = skills.filter(([skillName]) =>
+        removedSkillNames.has(skillName),
       ).length;
 
       let catalogStatus = "";
@@ -152,26 +156,44 @@ export async function list() {
           catalogStatus,
       );
 
-      for (const [fullName, skillData] of skills) {
-        const installedDate = new Date(
-          skillData.installedAt,
-        ).toLocaleDateString();
-
+      for (const [skillName, skillData] of skills) {
         let statusIcon = chalk.green("✓");
         let statusText = "";
 
-        if (updatedSkills.has(fullName)) {
+        if (updatedSkills.has(skillName)) {
           statusIcon = chalk.blue("↻");
           statusText = chalk.blue(" (update available)");
-        } else if (removedSkills.has(fullName)) {
+        } else if (removedSkillNames.has(skillName)) {
           statusIcon = chalk.yellow("⚠");
           statusText = chalk.yellow(" (removed from catalog)");
         }
 
-        console.log(`    ${statusIcon} ${skillData.skillName}${statusText}`);
+        console.log(`    ${statusIcon} ${skillName}${statusText}`);
+      }
+    }
+
+    // Detect "other" skills (custom skills not from any catalog)
+    const skillsDir = getOpenCodeSkillsPath();
+    if (fs.existsSync(skillsDir)) {
+      const allSkillDirs = fs.readdirSync(skillsDir, { withFileTypes: true })
+        .filter(dirent => dirent.isDirectory())
+        .map(dirent => dirent.name);
+      
+      const trackedSkills = new Set(Object.keys(config.installed));
+      const otherSkills = allSkillDirs.filter(name => !trackedSkills.has(name));
+
+      if (otherSkills.length > 0) {
+        console.log("");
         console.log(
-          `      ${chalk.dim(`v${skillData.version} • ${installedDate}`)}`,
+          chalk.bold(`  Other skills`) +
+            chalk.dim(
+              ` (${otherSkills.length} custom skill${otherSkills.length === 1 ? "" : "s"})`,
+            ),
         );
+
+        for (const skillName of otherSkills) {
+          console.log(`    ${chalk.dim("○")} ${skillName} ${chalk.dim("(not from any catalog)")}`);
+        }
       }
     }
 
@@ -208,18 +230,18 @@ export async function list() {
 
     // Group by catalog
     const newByCatalog = new Map<string, typeof diff.new>();
-    for (const skill of diff.new) {
-      if (!newByCatalog.has(skill.catalogId)) {
-        newByCatalog.set(skill.catalogId, []);
+    for (const availableSkill of diff.new) {
+      if (!newByCatalog.has(availableSkill.catalogId)) {
+        newByCatalog.set(availableSkill.catalogId, []);
       }
-      newByCatalog.get(skill.catalogId)!.push(skill);
+      newByCatalog.get(availableSkill.catalogId)!.push(availableSkill);
     }
 
     for (const [catalogId, skills] of newByCatalog) {
       console.log(chalk.bold(`  ${catalogId}`));
-      for (const skill of skills) {
+      for (const availableSkill of skills) {
         console.log(
-          `    ${chalk.dim("○")} ${skill.skillName} ${chalk.dim("- " + skill.skill.description)}`,
+          `    ${chalk.dim("○")} ${availableSkill.skillName} ${chalk.dim("- " + availableSkill.skill.description)}`,
         );
       }
       console.log("");

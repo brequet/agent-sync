@@ -2,11 +2,10 @@
 
 import { Command } from 'commander';
 import { setVerbose } from './utils/logger.js';
-import { catalogNew } from './commands/catalog/new.js';
+import { catalogInit } from './commands/catalog/init.js';
 import { catalogSkillAdd } from './commands/catalog/skill-add.js';
 import { catalogValidate } from './commands/catalog/validate.js';
-import { catalogBuild } from './commands/catalog/build.js';
-import { add } from './commands/add.js';
+import { addCommand } from './commands/add.js';
 import { skills } from './commands/skills.js';
 import { list } from './commands/list.js';
 import { sync } from './commands/sync.js';
@@ -36,16 +35,12 @@ const catalog = program
   .description('Manage catalog (maintainer commands)');
 
 catalog
-  .command('new')
-  .description('Create a new catalog')
+  .command('init')
+  .description('Initialize a new catalog in current directory')
   .option('--name <name>', 'Catalog name')
-  .option('--id <id>', 'Catalog ID (kebab-case)')
-  .option('--git-url <url>', 'Git repository URL')
   .action(async (options) => {
-    await catalogNew({
+    await catalogInit({
       name: options.name,
-      id: options.id,
-      gitUrl: options.gitUrl,
     });
   });
 
@@ -57,13 +52,11 @@ catalog
   .option('-d, --description <description>', 'Skill description')
   .option('-t, --tags <tags>', 'Comma-separated tags')
   .option('-l, --license <license>', 'License (e.g., MIT, Apache-2.0)', 'MIT')
-  .option('-v, --version <version>', 'Skill version', '1.0.0')
   .action(async (name, options) => {
     await catalogSkillAdd(name, {
       description: options.description,
       tags: options.tags,
       license: options.license,
-      version: options.version,
     });
   });
 
@@ -74,25 +67,18 @@ catalog
     await catalogValidate();
   });
 
-catalog
-  .command('build')
-  .description('Build catalog.json from current state')
-  .action(async () => {
-    await catalogBuild();
-  });
-
 // Consumer commands
 program
-  .command('add <catalog-path>')
-  .description('Add a local catalog or Git repository to your configuration')
-  .option('--name <name>', 'Override catalog name (for display)')
-  .option('--priority <number>', 'Set priority (default: auto-increment)', parseInt)
+  .command('add <catalogPath>')
+  .description('Add a new catalog (Git URL or local path)')
+  .option('--name <name>', 'Override catalog name')
+  .option('--priority <number>', 'Set catalog priority (lower = higher priority)', parseInt)
   .option('--inactive', 'Add catalog but mark as inactive')
   .option('--branch <branch>', 'Git branch to use (default: main, only for Git URLs)')
   .option('-y, --yes', 'Auto-install all skills without prompt')
   .option('--no-install', 'Skip skill installation (just add catalog)')
   .action(async (catalogPath, options) => {
-    await add(catalogPath, options);
+    await addCommand(catalogPath, options);
   });
 
 program
@@ -112,12 +98,7 @@ program
 
 program
   .command('skills')
-  .description('Install/update skills from registered catalogs (interactive by default)')
-  .option('--all', 'Install all skills from all active catalogs')
-  .option('--select <names>', 'Comma-separated skill names to install')
-  .option('--catalog <id>', 'Only install from specific catalog')
-  .option('--dry-run', 'Preview what would be installed without making changes')
-  .option('--force', 'Force reinstall even if hash matches')
+  .description('Install/update skills from registered catalogs (interactive)')
   .option('-y, --yes', 'Skip confirmation prompts')
   .action(async (options) => {
     await skills(options);

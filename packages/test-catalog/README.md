@@ -1,26 +1,17 @@
 # Test Catalog
 
-Catalog ID: `test-catalog`
+A simple test catalog for OpenCode AI Setup POC.
 
 ## Structure
 
 ```
-skills/          # OpenCode skills
-mcp/             # MCP server configurations
-meta/
-  catalog.json   # Catalog metadata
-  schema.json    # Schema reference
+test-catalog/
+├── skills/
+│   ├── frontend/
+│   │   └── SKILL.md
+│   └── backend-api/
+│       └── SKILL.md
+└── README.md
 ```
 
-## Usage
-
-```bash
-# Add a skill
-npx @brequet/ai-setup catalog skill add my-skill
-
-# Validate catalog
-npx @brequet/ai-setup catalog validate
-
-# Build catalog
-npx @brequet/ai-setup catalog build
-```
+No build step required - just add SKILL.md files to the skills/ directory!

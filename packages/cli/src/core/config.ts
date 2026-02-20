@@ -16,16 +16,12 @@ export interface CatalogEntry {
 }
 
 export interface InstalledSkill {
-  catalog: string;      // catalog ID
-  skillName: string;    // skill name in catalog (without prefix)
-  version: string;
-  hash: string;
-  installedAt: string;  // ISO timestamp
+  catalog: string;      // catalog ID (e.g., "brequet/bre-ia-catalog" or "test-catalog")
 }
 
 export interface UserConfig {
   catalogs: Record<string, CatalogEntry>;
-  installed: Record<string, InstalledSkill>;  // key is full skill name (e.g., "bre-company-refactor-monorepo")
+  installed: Record<string, InstalledSkill>;  // key is skill name (e.g., "frontend", "researcher")
 }
 
 /**
@@ -103,17 +99,17 @@ export function getNextPriority(config: UserConfig): number {
  */
 export function trackInstallation(
   config: UserConfig,
-  fullSkillName: string,
-  details: InstalledSkill
+  skillName: string,
+  catalogId: string
 ): void {
-  config.installed[fullSkillName] = details;
+  config.installed[skillName] = { catalog: catalogId };
 }
 
 /**
  * Remove a skill from installed tracking
  */
-export function untrackInstallation(config: UserConfig, fullSkillName: string): void {
-  delete config.installed[fullSkillName];
+export function untrackInstallation(config: UserConfig, skillName: string): void {
+  delete config.installed[skillName];
 }
 
 /**

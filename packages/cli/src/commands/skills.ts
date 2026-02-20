@@ -8,13 +8,7 @@ import {
   trackInstallation,
   untrackInstallation,
 } from "../core/config.js";
-import {
-  installSkills,
-  createInstalledRecord,
-  loadCatalog,
-  buildFullSkillName,
-  resolveCatalogPath,
-} from "../core/installer.js";
+import { resolveCatalogPath } from "../core/installer.js";
 import { getOpenCodeSkillsPath } from "../utils/paths.js";
 import { compareWithCatalog, getDiffSummary } from "../core/diff.js";
 import { cloneOrPullCatalog } from "../utils/git.js";
@@ -23,11 +17,6 @@ import fs from "node:fs";
 import path from "node:path";
 
 interface SkillsOptions {
-  all?: boolean;
-  select?: string;
-  catalog?: string;
-  dryRun?: boolean;
-  force?: boolean;
   yes?: boolean; // Skip confirmations
 }
 
@@ -141,10 +130,10 @@ async function interactiveMode(options: SkillsOptions) {
   // Show new skills
   if (diff.new.length > 0) {
     console.log(chalk.bold("New skills:"));
-    for (const skill of diff.new) {
+    for (const availableSkill of diff.new) {
       console.log(
-        chalk.green(`  + ${skill.fullName}`) +
-          chalk.dim(` - ${skill.skill.description}`),
+        chalk.green(`  + ${availableSkill.skillName}`) +
+          chalk.dim(` - ${availableSkill.skill.description}`),
       );
     }
     console.log("");
@@ -153,9 +142,9 @@ async function interactiveMode(options: SkillsOptions) {
   // Show updated skills
   if (diff.updated.length > 0) {
     console.log(chalk.bold("Updates available:"));
-    for (const skill of diff.updated) {
+    for (const availableSkill of diff.updated) {
       console.log(
-        chalk.blue(`  ↻ ${skill.fullName}`) + chalk.dim(" - Content updated"),
+        chalk.blue(`  ↻ ${availableSkill.skillName}`) + chalk.dim(" - Content updated"),
       );
     }
     console.log("");
@@ -165,10 +154,9 @@ async function interactiveMode(options: SkillsOptions) {
   let shouldRemoveOrphaned = false;
   if (diff.removed.length > 0) {
     console.log(chalk.bold("Removed from catalog:"));
-    for (const skill of diff.removed) {
-      const fullName = buildFullSkillName(skill.catalog, skill.skillName);
+    for (const removedSkill of diff.removed) {
       console.log(
-        chalk.yellow(`  - ${fullName}`) +
+        chalk.yellow(`  - ${removedSkill.skillName}`) +
           chalk.dim(" - No longer in any catalog"),
       );
     }
@@ -217,21 +205,18 @@ async function interactiveMode(options: SkillsOptions) {
     // Combine new and updated skills for installation
     const skillsToInstall = [...diff.new, ...diff.updated];
 
-    for (const skillWithContext of skillsToInstall) {
-      const { catalogId, skillName, skill, fullName } = skillWithContext;
+    for (const availableSkill of skillsToInstall) {
+      const { catalogId, skillName, skill } = availableSkill;
 
       try {
-        const action = diff.new.includes(skillWithContext)
+        const action = diff.new.includes(availableSkill)
           ? "create"
           : "update";
 
         // Install the skill
-        const catalogPath = resolveCatalogPath(
-          skillWithContext.catalogId,
-          skillWithContext.catalogEntry,
-        );
-        const sourcePath = path.join(catalogPath, skill.path);
-        const skillDir = path.join(targetDir, fullName);
+        const catalogPath = resolveCatalogPath(catalogId, availableSkill.catalogEntry);
+        const sourcePath = skill.sourcePath;
+        const skillDir = path.join(targetDir, skillName);
 
         if (!fs.existsSync(skillDir)) {
           fs.mkdirSync(skillDir, { recursive: true });
@@ -240,27 +225,17 @@ async function interactiveMode(options: SkillsOptions) {
         const targetPath = path.join(skillDir, "SKILL.md");
         fs.copyFileSync(sourcePath, targetPath);
 
-        // Compute actual hash of installed file (not catalog hash which may be outdated)
-        const actualHash = computeFileHash(targetPath);
-
-        // Track installation with actual file hash
-        const installedRecord = createInstalledRecord(
-          catalogId,
-          skillName,
-          skill,
-        );
-        // Override the catalog hash with the actual installed file hash
-        installedRecord.hash = actualHash;
-        trackInstallation(config, fullName, installedRecord);
+        // Track installation with simplified schema
+        trackInstallation(config, skillName, catalogId);
 
         if (action === "create") {
-          console.log(chalk.green(`✓ Created ${fullName}`));
+          console.log(chalk.green(`✓ Created ${skillName}`));
         } else {
-          console.log(chalk.blue(`↻ Updated ${fullName}`));
+          console.log(chalk.blue(`↻ Updated ${skillName}`));
         }
       } catch (error) {
         console.log(
-          chalk.red(`✖ Failed ${fullName}: ${(error as Error).message}`),
+          chalk.red(`✖ Failed ${skillName}: ${(error as Error).message}`),
         );
       }
     }
@@ -272,21 +247,21 @@ async function interactiveMode(options: SkillsOptions) {
   if (shouldRemoveOrphaned && diff.removed.length > 0) {
     const targetDir = getOpenCodeSkillsPath();
 
-    for (const skill of diff.removed) {
+    for (const removedSkill of diff.removed) {
       try {
-        const fullName = buildFullSkillName(skill.catalog, skill.skillName);
-        const skillDir = path.join(targetDir, fullName);
+        const skillName = removedSkill.skillName;
+        const skillDir = path.join(targetDir, skillName);
 
         if (fs.existsSync(skillDir)) {
           fs.rmSync(skillDir, { recursive: true, force: true });
         }
 
-        untrackInstallation(config, fullName);
-        console.log(chalk.yellow(`✓ Removed ${fullName}`));
+        untrackInstallation(config, skillName);
+        console.log(chalk.yellow(`✓ Removed ${skillName}`));
       } catch (error) {
         console.log(
           chalk.red(
-            `✖ Failed to remove ${skill.skillName}: ${(error as Error).message}`,
+            `✖ Failed to remove skill: ${(error as Error).message}`,
           ),
         );
       }
@@ -301,186 +276,8 @@ async function interactiveMode(options: SkillsOptions) {
 }
 
 /**
- * Non-interactive mode: Install specific skills (--all or --select)
- */
-async function nonInteractiveMode(options: SkillsOptions) {
-  const config = loadConfig();
-  const activeCatalogs = getActiveCatalogs(config);
-
-  if (activeCatalogs.length === 0) {
-    logger.error("No catalogs registered");
-    logger.info(
-      "Add a catalog first: npx @brequet/ai-setup add <catalog-path>",
-    );
-    process.exit(1);
-  }
-
-  logger.debug(`Found ${activeCatalogs.length} active catalog(s)`);
-
-  // Auto-sync Git catalogs
-  await syncGitCatalogs(activeCatalogs);
-
-  // Save config with updated lastSynced timestamps
-  saveConfig(config);
-
-  // Filter catalogs if --catalog specified
-  let catalogsToUse = activeCatalogs;
-  if (options.catalog) {
-    catalogsToUse = activeCatalogs.filter((c) => c.id === options.catalog);
-    if (catalogsToUse.length === 0) {
-      logger.error(`Catalog "${options.catalog}" not found or not active`);
-      process.exit(1);
-    }
-  }
-
-  // Build skill filter based on options
-  let skillFilter:
-    | ((catalogId: string, skillName: string) => boolean)
-    | undefined;
-
-  if (options.select) {
-    const selectedSkills = options.select
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    if (selectedSkills.length === 0) {
-      logger.error("No valid skill names provided in --select");
-      process.exit(1);
-    }
-
-    logger.debug(`Filtering for skills: ${selectedSkills.join(", ")}`);
-
-    skillFilter = (catalogId: string, skillName: string) => {
-      return selectedSkills.includes(skillName);
-    };
-  }
-
-  // Show target directory
-  const targetDir = getOpenCodeSkillsPath();
-  logger.info(`Target: ${targetDir}`);
-  console.log("");
-
-  // Install skills
-  const results = await installSkills(
-    config,
-    catalogsToUse,
-    skillFilter,
-    options.dryRun || false,
-  );
-
-  // Update config with installations (unless dry-run)
-  if (!options.dryRun) {
-    for (const result of results) {
-      if (result.action === "created" || result.action === "updated") {
-        for (const { id: catalogId, entry } of catalogsToUse) {
-          const catalog = loadCatalog(catalogId, entry);
-          const skill = catalog.skills?.[result.skillName];
-
-          if (skill) {
-            const installedRecord = createInstalledRecord(
-              catalogId,
-              result.skillName,
-              skill,
-            );
-            
-            // Compute actual hash of installed file (not catalog hash which may be outdated)
-            const skillDir = path.join(targetDir, result.fullName);
-            const targetPath = path.join(skillDir, "SKILL.md");
-            const actualHash = computeFileHash(targetPath);
-            
-            // Override the catalog hash with the actual installed file hash
-            installedRecord.hash = actualHash;
-            
-            trackInstallation(config, result.fullName, installedRecord);
-            break;
-          }
-        }
-      }
-    }
-
-    saveConfig(config);
-  }
-
-  // Display results
-  console.log("");
-  logger.info(options.dryRun ? "Preview (dry-run):" : "Results:");
-  console.log("");
-
-  const created = results.filter((r) => r.action === "created");
-  const updated = results.filter((r) => r.action === "updated");
-  const skipped = results.filter((r) => r.action === "skipped" && !r.error);
-  const errors = results.filter((r) => r.error);
-
-  for (const result of created) {
-    console.log(chalk.green(`✓ Created ${result.fullName}`));
-  }
-
-  for (const result of updated) {
-    console.log(chalk.blue(`↻ Updated ${result.fullName}`));
-  }
-
-  if (skipped.length > 0) {
-    logger.debug(`Skipped ${skipped.length} skill(s) (already up to date)`);
-    for (const result of skipped) {
-      logger.debug(`  → ${result.fullName}`);
-    }
-  }
-
-  for (const result of errors) {
-    console.log(chalk.red(`✖ Failed ${result.fullName}: ${result.error}`));
-  }
-
-  console.log("");
-  if (options.dryRun) {
-    logger.info("Summary (no changes made):");
-  } else {
-    logger.info("Summary:");
-  }
-
-  if (created.length > 0) {
-    logger.info(
-      `  Created:  ${created.length} skill${created.length === 1 ? "" : "s"}`,
-    );
-  }
-  if (updated.length > 0) {
-    logger.info(
-      `  Updated:  ${updated.length} skill${updated.length === 1 ? "" : "s"}`,
-    );
-  }
-  if (skipped.length > 0) {
-    logger.info(
-      `  Skipped:  ${skipped.length} skill${skipped.length === 1 ? "" : "s"} (up to date)`,
-    );
-  }
-  if (errors.length > 0) {
-    logger.info(
-      `  Failed:   ${errors.length} skill${errors.length === 1 ? "" : "s"}`,
-    );
-  }
-
-  if (results.length === 0) {
-    logger.warn("No skills matched the filter");
-  }
-
-  console.log("");
-
-  if (errors.length > 0) {
-    process.exit(1);
-  }
-}
-
-/**
  * Main skills command entry point
  */
 export async function skills(options: SkillsOptions = {}) {
-  // If no flags provided, enter interactive mode
-  const isInteractive = !options.all && !options.select && !options.dryRun;
-
-  if (isInteractive) {
-    await interactiveMode(options);
-  } else {
-    logger.info("Processing skills...\n");
-    await nonInteractiveMode(options);
-  }
+  await interactiveMode(options);
 }
