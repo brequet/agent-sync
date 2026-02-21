@@ -8,6 +8,9 @@
   "bin": {
     "agent-sync": "./dist/cli.js"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsx watch src/cli.ts",
     "build": "tsc",
