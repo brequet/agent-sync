@@ -13,7 +13,10 @@
     "lint": "oxlint src",
     "lint:fix": "oxlint --fix src",
     "format": "oxfmt src",
-    "format:check": "oxfmt --check src"
+    "format:check": "oxfmt --check src",
+    "test": "cross-env NODE_ENV=test vitest run",
+    "test:watch": "cross-env NODE_ENV=test vitest",
+    "test:ui": "cross-env NODE_ENV=test vitest --ui"
   },
   "files": [
     "dist"
@@ -34,9 +37,13 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "@types/tmp": "^0.2.6",
+    "cross-env": "^10.1.0",
     "oxfmt": "^0.34.0",
     "oxlint": "^1.49.0",
+    "tmp": "^0.2.5",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^4.0.18"
   }
 }

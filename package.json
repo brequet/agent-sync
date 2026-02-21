@@ -6,6 +6,7 @@
   "scripts": {
     "build": "pnpm --filter @brequet/ai-setup build",
     "dev": "pnpm --filter @brequet/ai-setup dev",
+    "test": "pnpm --filter @brequet/ai-setup test",
     "test:catalog": "cd packages/test-catalog && node ../cli/dist/cli.js",
     "lint:all": "pnpm --filter @brequet/ai-setup lint && pnpm --filter @brequet/ai-setup format"
   },

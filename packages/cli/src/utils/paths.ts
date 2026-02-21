@@ -3,11 +3,28 @@ import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 
+let testOverrides: { skillsDir?: string; configDir?: string } | null = null;
+
+export function __setTestPaths(overrides: { skillsDir?: string; configDir?: string }): void {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('__setTestPaths can only be called in test environment');
+  }
+  testOverrides = overrides;
+}
+
+export function __clearTestPaths(): void {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('__clearTestPaths can only be called in test environment');
+  }
+  testOverrides = null;
+}
+
 export function getHomeDir(): string {
   return os.homedir();
 }
 
 export function getConfigDir(): string {
+  if (testOverrides?.configDir) return testOverrides.configDir;
   return path.join(getHomeDir(), '.config', 'ai-setup');
 }
 
@@ -47,6 +64,7 @@ export function getDefaultSkillsDir(): string {
 }
 
 export function getSkillsDir(): string {
+  if (testOverrides?.skillsDir) return testOverrides.skillsDir;
   return tryDetectSkillsDir() || getDefaultSkillsDir();
 }
 
