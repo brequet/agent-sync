@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, copyFile, readdir, rm, access } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, copyFile, readdir, rm, access, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import { FileSystemError } from './errors.js';
@@ -20,6 +20,36 @@ export async function writeFileAsync(path: string, content: string): Promise<voi
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new FileSystemError(`Failed to write file: ${path} - ${message}`);
+  }
+}
+
+/**
+ * Atomically writes content to a file using a temporary file and rename.
+ * This prevents corruption if the process crashes or is interrupted during write.
+ *
+ * @param path - The target file path
+ * @param content - The content to write
+ * @throws {FileSystemError} If the write or rename operation fails
+ */
+export async function writeFileAtomicAsync(path: string, content: string): Promise<void> {
+  const tmpPath = `${path}.tmp`;
+
+  try {
+    // Write to temporary file first
+    await writeFile(tmpPath, content, 'utf-8');
+
+    // Atomically rename temp file to target (atomic operation on most systems)
+    await rename(tmpPath, path);
+  } catch (err) {
+    // Clean up temp file if it exists
+    try {
+      await rm(tmpPath, { force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+
+    const message = err instanceof Error ? err.message : String(err);
+    throw new FileSystemError(`Failed to atomically write file: ${path} - ${message}`);
   }
 }
 

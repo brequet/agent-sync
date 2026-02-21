@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { getConfigPath, getConfigDir, ensureDirAsync } from '../utils/paths.js';
+import { writeFileAtomicAsync } from '../utils/fs-async.js';
 import { logger } from '../utils/logger.js';
 
 export interface CatalogEntry {
@@ -54,7 +55,7 @@ export async function saveConfig(config: UserConfig): Promise<void> {
   await ensureDirAsync(configDir);
 
   try {
-    await writeFile(configPath, JSON.stringify(config, null, 2));
+    await writeFileAtomicAsync(configPath, JSON.stringify(config, null, 2));
     logger.debug(`Saved config to ${configPath}`);
   } catch (error) {
     logger.error('Failed to save config file', error as Error);
